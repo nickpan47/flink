@@ -17,12 +17,24 @@
 
 package org.apache.flink.streaming.kafka.test;
 
+import java.io.File;
+import java.util.Arrays;
+
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.connector.base.source.hybrid.HybridSource;
+import org.apache.flink.connector.file.src.FileSource;
+import org.apache.flink.connector.file.src.reader.TextLineFormat;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
+import org.apache.flink.connector.kafka.source.KafkaSource;
+import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
+import org.apache.flink.connector.kafka.source.reader.deserializer.KafkaRecordDeserializationSchema;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
+//import org.apache.flink.streaming.connectors.kafka;
 import org.apache.flink.streaming.kafka.test.base.CustomWatermarkExtractor;
 import org.apache.flink.streaming.kafka.test.base.KafkaEvent;
 import org.apache.flink.streaming.kafka.test.base.KafkaEventSchema;
@@ -30,6 +42,7 @@ import org.apache.flink.streaming.kafka.test.base.KafkaExampleUtil;
 import org.apache.flink.streaming.kafka.test.base.RollingAdditionMapper;
 
 import org.apache.kafka.clients.producer.ProducerConfig;
+
 
 /**
  * A simple example that shows how to read from and write to modern Kafka. This will read String
@@ -44,24 +57,41 @@ import org.apache.kafka.clients.producer.ProducerConfig;
  * <p>Example usage: --input-topic test-input --output-topic test-output --bootstrap.servers
  * localhost:9092 --group.id myconsumer
  */
-public class KafkaExample extends KafkaExampleUtil {
+public class HybridFileKafkaExample extends KafkaExampleUtil {
+
+    static final CustomWatermarkExtractor watermarkExtractor = new CustomWatermarkExtractor();
 
     public static void main(String[] args) throws Exception {
         // parse input arguments
         final ParameterTool parameterTool = ParameterTool.fromArgs(args);
         StreamExecutionEnvironment env = KafkaExampleUtil.prepareExecutionEnv(parameterTool);
 
+        FileSource<KafkaEvent> fileSource =
+                FileSource.forRecordStreamFormat(new KafkaEventRecordFormat(),
+                        Path.fromLocalFile(new File(parameterTool.getRequired("input-file")))).build();
+        KafkaSource<KafkaEvent> kafkaSource = KafkaSource.<KafkaEvent>builder()
+                .setBootstrapServers("localhost:9092")
+                .setGroupId("MyGroup")
+                .setTopics(Arrays.asList(parameterTool.getRequired("input-topic")))
+                .setDeserializer(
+                    KafkaRecordDeserializationSchema.valueOnly(new KafkaEventSchema()))
+                .setStartingOffsets(OffsetsInitializer.earliest())
+                .build();
+        HybridSource<KafkaEvent> hybridSource =
+                HybridSource.builder(fileSource)
+                  .addSource(kafkaSource)
+                  .build();
+
         DataStream<KafkaEvent> input =
-                env.addSource(
-                                new FlinkKafkaConsumer<>(
-                                                parameterTool.getRequired("input-topic"),
-                                                new KafkaEventSchema(),
-                                                parameterTool.getProperties())
-                                        .assignTimestampsAndWatermarks(
-                                                new CustomWatermarkExtractor())
-                                        .setStartFromEarliest())
-                        .keyBy("word")
-                        .map(new RollingAdditionMapper());
+                env.fromSource(
+                        hybridSource,
+                        WatermarkStrategy.<KafkaEvent>forMonotonousTimestamps().withTimestampAssigner(
+                                (event, timestamp) -> watermarkExtractor.extractTimestamp(
+                                        event,
+                                        timestamp)),
+                        "hybrid-source")
+//                        .keyBy(r -> r.getWord(), TypeInformation.of(String.class))
+                        .map(new RollingAdditionMapper(), TypeInformation.of(KafkaEvent.class));
 
         input.sinkTo(
                 KafkaSink.<KafkaEvent>builder()
@@ -76,6 +106,6 @@ public class KafkaExample extends KafkaExampleUtil {
                                         .build())
                         .build());
 
-        env.execute("Modern Kafka Example");
+        env.execute("Hybrid (File + Kafka) Example");
     }
 }

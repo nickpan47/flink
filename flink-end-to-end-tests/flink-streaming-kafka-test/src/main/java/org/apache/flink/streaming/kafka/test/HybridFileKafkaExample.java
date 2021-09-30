@@ -21,6 +21,7 @@ import java.io.File;
 import java.util.Arrays;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.connector.base.source.hybrid.HybridSource;
@@ -42,6 +43,8 @@ import org.apache.flink.streaming.kafka.test.base.KafkaExampleUtil;
 import org.apache.flink.streaming.kafka.test.base.RollingAdditionMapper;
 
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
 
 
 /**
@@ -66,31 +69,30 @@ public class HybridFileKafkaExample extends KafkaExampleUtil {
         final ParameterTool parameterTool = ParameterTool.fromArgs(args);
         StreamExecutionEnvironment env = KafkaExampleUtil.prepareExecutionEnv(parameterTool);
 
-        FileSource<KafkaEvent> fileSource =
-                FileSource.forRecordStreamFormat(new KafkaEventRecordFormat(),
+        FileSource<String> fileSource =
+                FileSource.forRecordStreamFormat(new TextLineFormat(),
                         Path.fromLocalFile(new File(parameterTool.getRequired("input-file")))).build();
-        KafkaSource<KafkaEvent> kafkaSource = KafkaSource.<KafkaEvent>builder()
+        KafkaSource<String> kafkaSource = KafkaSource.<String>builder()
                 .setBootstrapServers("localhost:9092")
                 .setGroupId("MyGroup")
                 .setTopics(Arrays.asList(parameterTool.getRequired("input-topic")))
                 .setDeserializer(
-                    KafkaRecordDeserializationSchema.valueOnly(new KafkaEventSchema()))
+                    KafkaRecordDeserializationSchema.valueOnly(StringDeserializer.class))
                 .setStartingOffsets(OffsetsInitializer.earliest())
                 .build();
-        HybridSource<KafkaEvent> hybridSource =
+        HybridSource<String> hybridSource =
                 HybridSource.builder(fileSource)
                   .addSource(kafkaSource)
                   .build();
 
         DataStream<KafkaEvent> input =
                 env.fromSource(
-                        hybridSource,
-                        WatermarkStrategy.<KafkaEvent>forMonotonousTimestamps().withTimestampAssigner(
-                                (event, timestamp) -> watermarkExtractor.extractTimestamp(
-                                        event,
-                                        timestamp)),
+                        //hybridSource,
+                        kafkaSource,
+                        WatermarkStrategy.<String>noWatermarks(),
                         "hybrid-source")
-//                        .keyBy(r -> r.getWord(), TypeInformation.of(String.class))
+                        .map(KafkaEvent::fromString)
+                        .keyBy("word")
                         .map(new RollingAdditionMapper(), TypeInformation.of(KafkaEvent.class));
 
         input.sinkTo(

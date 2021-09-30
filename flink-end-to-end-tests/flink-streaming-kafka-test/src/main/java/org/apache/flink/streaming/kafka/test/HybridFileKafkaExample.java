@@ -87,11 +87,13 @@ public class HybridFileKafkaExample extends KafkaExampleUtil {
 
         DataStream<KafkaEvent> input =
                 env.fromSource(
-                        //hybridSource,
-                        kafkaSource,
+                         hybridSource,
+//                         kafkaSource,
+//                        fileSource,
                         WatermarkStrategy.<String>noWatermarks(),
-                        "hybrid-source")
-                        .map(KafkaEvent::fromString)
+                        "hybrid-source",
+                        TypeInformation.of(String.class))
+                        .map(KafkaEvent::fromString, TypeInformation.of(KafkaEvent.class))
                         .keyBy("word")
                         .map(new RollingAdditionMapper(), TypeInformation.of(KafkaEvent.class));
 
